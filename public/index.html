@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="ja">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>未知問答</title>
+        <link rel="stylesheet" href="css/mobile.css" />
+    </head>
+    <body>
+        <p id="topic"></p>
+        <textarea
+            id="answer"
+            maxlength="200"
+            placeholder="自由に書いてください"
+        ></textarea>
+        <button id="send">送信</button>
+        <p id="status"></p>
+
+        <script src="/socket.io/socket.io.js"></script>
+        <script src="js/mobile.js"></script>
+    </body>
+</html>
