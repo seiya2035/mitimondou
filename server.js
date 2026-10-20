@@ -36,13 +36,9 @@ io.on("connection", (socket) => {
     });
 
     // 回答が届いたら、お題とセットでモニターに配る
-    socket.on("answer", (data) => {
-        const topic = topics[Number(data?.topicId)];
-        const answer = String(data?.text ?? "")
-            .trim()
-            .slice(0, 200);
-        if (topic === undefined || !answer) return;
-        io.emit("newAnswer", { topic, answer });
+    socket.emit("getTopic", (topic) => {
+        topicId = topic.id;
+        topicEl.textContent = topic.text;
     });
 });
 
