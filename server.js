@@ -27,7 +27,8 @@ let nextIndex = 0;
 app.use(express.static("public"));
 
 io.on("connection", (socket) => {
-    // スマホがページを開いたら、次のお題を渡す
+    console.log("接続:", socket.id);
+
     socket.on("getTopic", (callback) => {
         if (typeof callback !== "function") return;
         const id = nextIndex;
@@ -35,10 +36,18 @@ io.on("connection", (socket) => {
         callback({ id, text: topics[id] });
     });
 
-    // 回答が届いたら、お題とセットでモニターに配る
-    socket.emit("getTopic", (topic) => {
-        topicId = topic.id;
-        topicEl.textContent = topic.text;
+    socket.on("answer", (data, callback) => {
+        // 古い形式（文字だけ）でも新しい形式（{ topicId, text }）でも受け取る
+        const isObject = typeof data === "object" && data !== null;
+        const text = isObject ? data.text : data;
+        const topic = isObject ? topics[Number(data.topicId)] ?? "" : "";
+        const answer = String(text ?? "").trim().slice(0, 200);
+
+        console.log("回答受信:", topic, "/", answer);
+        if (!answer) return;
+
+        io.emit("newAnswer", { topic, answer });
+        if (typeof callback === "function") callback(true);
     });
 });
 
