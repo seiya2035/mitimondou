@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>未知問答 ｜ みんなの回答</title>
+    <style>
+        :root {
+            --bg: #eef1f6;
+            --ink: #1b2340;
+            --muted: #6b7391;
+            --line: #d5dae6;
+            --accent: #3d5afe;
+            --surface: #ffffff;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            background: var(--bg);
+            color: var(--ink);
+            font-family: system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif;
+            line-height: 1.6;
+        }
+        .wrap { max-width: 640px; margin: 0 auto; padding: 24px 16px 64px; }
+        h1 { font-size: 1.6rem; margin: 0 0 4px; letter-spacing: 0.04em; }
+        .lead { margin: 0 0 20px; color: var(--muted); font-size: 0.9rem; }
+
+        .tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+        .tabs button {
+            flex: 1;
+            padding: 10px;
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            background: var(--surface);
+            color: var(--ink);
+            font: inherit;
+            cursor: pointer;
+        }
+        .tabs button[aria-pressed="true"] {
+            background: var(--ink);
+            border-color: var(--ink);
+            color: #fff;
+        }
+        .tabs button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+        .count { font-size: 0.85rem; color: var(--muted); margin: 0 0 12px; }
+
+        ol { list-style: none; margin: 0; padding: 0; }
+        li {
+            background: var(--surface);
+            border-left: 4px solid var(--line);
+            padding: 14px 16px;
+            margin-bottom: 10px;
+            border-radius: 4px;
+        }
+        li.mine { border-left-color: var(--accent); }
+        .topic { margin: 0; font-size: 0.8rem; color: var(--muted); }
+        .answer { margin: 4px 0 6px; font-size: 1.15rem; word-break: break-word; }
+        .meta { margin: 0; font-size: 0.75rem; color: var(--muted); }
+        .meta .you { color: var(--accent); font-weight: 600; margin-left: 8px; }
+
+        .empty { padding: 32px 16px; text-align: center; color: var(--muted); }
+    </style>
+</head>
+<body>
+    <main class="wrap">
+        <h1>未知問答</h1>
+        <p class="lead">未来想像展で届いた回答を見返せます。新しい回答は自動で追加されます。</p>
+
+        <div class="tabs" role="group" aria-label="表示する回答">
+            <button type="button" data-filter="all" aria-pressed="true">みんなの回答</button>
+            <button type="button" data-filter="mine" aria-pressed="false">自分の回答</button>
+        </div>
+
+        <p class="count" id="count">読み込み中…</p>
+        <ol id="list"></ol>
+        <p class="empty" id="empty" hidden></p>
+    </main>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="js/answers.js"></script>
+</body>
+</html>
