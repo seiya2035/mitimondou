@@ -1,6 +1,7 @@
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
+const { containsNgWord, isRepeated, remember } = require("./moderation");
 
 const app = express();
 const server = http.createServer(app);
@@ -37,17 +38,48 @@ io.on("connection", (socket) => {
     });
 
     socket.on("answer", (data, callback) => {
-        // 古い形式（文字だけ）でも新しい形式（{ topicId, text }）でも受け取る
+        // 結果をスマホに返す。1つ目は成功したか、2つ目は理由とメッセージ
+        const reply = (ok, info) => {
+            if (typeof callback === "function") callback(ok, info);
+        };
+
+        // 古い形式（文字だけ）でも新しい形式（{ topicId, text, deviceId }）でも受け取る
         const isObject = typeof data === "object" && data !== null;
         const text = isObject ? data.text : data;
-        const topic = isObject ? topics[Number(data.topicId)] ?? "" : "";
+        const topicId = isObject ? Number(data.topicId) : null;
+        const topic = isObject ? topics[topicId] ?? "" : "";
         const answer = String(text ?? "").trim().slice(0, 200);
+        const deviceId = isObject && typeof data.deviceId === "string"
+            ? data.deviceId.slice(0, 64)
+            : "";
 
+        // ① 空の回答
+        if (!answer) {
+            return reply(false, { reason: "empty", message: "回答を入力してください" });
+        }
+
+        // ② 禁止用語
+        if (containsNgWord(answer)) {
+            console.log("禁止用語のため表示しません:", answer);
+            return reply(false, {
+                reason: "ng",
+                message: "表示できない言葉が含まれています。言い方を変えてみてください",
+            });
+        }
+
+        // ③ 同じ端末から、同じお題に、同じ回答
+        if (isRepeated(deviceId, topicId, answer)) {
+            return reply(false, {
+                reason: "repeated",
+                message: "この回答はもう届いています。別の答えも送ってみてください",
+            });
+        }
+
+        // ④ 問題なし → 覚えてからモニターに流す
+        remember(deviceId, topicId, answer);
         console.log("回答受信:", topic, "/", answer);
-        if (!answer) return;
-
         io.emit("newAnswer", { topic, answer });
-        if (typeof callback === "function") callback(true);
+        reply(true);
     });
 });
 

@@ -39,3 +39,41 @@ sendBtn.addEventListener("click", () => {
         statusEl.textContent = "送信しました！";
     });
 });
+
+// ===== mobile.js に追加する部分 =====
+
+// 端末IDを作る（初回だけ作って、スマホのブラウザに保存しておく）
+function getDeviceId() {
+    const KEY = "mitimondou-device-id";
+    try {
+        let id = localStorage.getItem(KEY);
+        if (!id) {
+            // randomUUID が使えない環境（http の IP アドレスなど）用の予備
+            id = (window.crypto && crypto.randomUUID)
+                ? crypto.randomUUID()
+                : Date.now().toString(36) + Math.random().toString(36).slice(2);
+            localStorage.setItem(KEY, id);
+        }
+        return id;
+    } catch (e) {
+        // 保存できない設定のブラウザでは端末IDなしで送る（重複チェックはされない）
+        return "";
+    }
+}
+
+const deviceId = getDeviceId();
+
+// ===== 送信部分の書き換え例 =====
+// これまで { topicId, text } を送っていたところに deviceId を足し、
+// 返事を (ok, info) の2つで受け取るようにする
+
+socket.emit("answer", { topicId, text, deviceId }, (ok, info) => {
+    if (ok) {
+        statusEl.textContent = "送信しました！";
+        // 入力欄を空にするなど、今の成功時の処理
+    } else {
+        // サーバーからのメッセージがあればそれを表示する
+        statusEl.textContent = (info && info.message)
+            || "送信できませんでした。もう一度押してください";
+    }
+});
