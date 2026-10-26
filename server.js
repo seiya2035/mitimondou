@@ -76,6 +76,7 @@ io.on("connection", (socket) => {
         }
 
         // ④ 問題なし → 覚えてからモニターに流す
+        // console.log("端末ID:", deviceId || "（なし）", "お題ID:", topicId);
         remember(deviceId, topicId, answer);
         console.log("回答受信:", topic, "/", answer);
         io.emit("newAnswer", { topic, answer });

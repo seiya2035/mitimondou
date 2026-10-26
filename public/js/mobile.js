@@ -5,44 +5,12 @@ const sendBtn = document.getElementById("send");
 const statusEl = document.getElementById("status");
 
 let topicId = null;
+let sending = false; // 送信中かどうか（連打防止用）
 
-socket.on("connect_error", () => {
-    statusEl.textContent = "サーバーに接続できません。少し待って再読み込みしてください";
-});
-
-// ページを開いたときに1回だけお題をもらう
-socket.emit("getTopic", (topic) => {
-    topicId = topic.id;
-    topicEl.textContent = topic.text;
-    statusEl.textContent = "";
-});
-
-sendBtn.addEventListener("click", () => {
-    const text = answerEl.value.trim();
-    if (topicId === null) {
-        statusEl.textContent = "お題を読み込み中です。少し待ってください";
-        return;
-    }
-    if (!text) {
-        statusEl.textContent = "回答を入力してください";
-        return;
-    }
-
-    statusEl.textContent = "送信中…";
-    // サーバーが受け取ったら「送信しました」を出す（5秒返事がなければエラー）
-    socket.timeout(5000).emit("answer", { topicId, text }, (err) => {
-        if (err) {
-            statusEl.textContent = "送信できませんでした。もう一度押してください";
-            return;
-        }
-        answerEl.value = "";
-        statusEl.textContent = "送信しました！";
-    });
-});
-
-// ===== mobile.js に追加する部分 =====
-
-// 端末IDを作る（初回だけ作って、スマホのブラウザに保存しておく）
+// ------------------------------------------------------------
+// 端末ID：初回だけ作って、このブラウザに保存しておく
+// 同じ端末から同じ回答が送られたかをサーバーが見分けるために使う
+// ------------------------------------------------------------
 function getDeviceId() {
     const KEY = "mitimondou-device-id";
     try {
@@ -63,17 +31,63 @@ function getDeviceId() {
 
 const deviceId = getDeviceId();
 
-// ===== 送信部分の書き換え例 =====
-// これまで { topicId, text } を送っていたところに deviceId を足し、
-// 返事を (ok, info) の2つで受け取るようにする
+// ------------------------------------------------------------
+// 接続とお題
+// ------------------------------------------------------------
+socket.on("connect_error", () => {
+    statusEl.textContent = "サーバーに接続できません。少し待って再読み込みしてください";
+});
 
-socket.emit("answer", { topicId, text, deviceId }, (ok, info) => {
-    if (ok) {
-        statusEl.textContent = "送信しました！";
-        // 入力欄を空にするなど、今の成功時の処理
-    } else {
-        // サーバーからのメッセージがあればそれを表示する
-        statusEl.textContent = (info && info.message)
-            || "送信できませんでした。もう一度押してください";
+// ページを開いたときに1回だけお題をもらう
+socket.emit("getTopic", (topic) => {
+    topicId = topic.id;
+    topicEl.textContent = topic.text;
+    statusEl.textContent = "";
+});
+
+// ------------------------------------------------------------
+// 送信
+// ------------------------------------------------------------
+function setSending(value) {
+    sending = value;
+    sendBtn.disabled = value;
+}
+
+sendBtn.addEventListener("click", () => {
+    if (sending) return; // 返事を待っている間は押せない
+
+    const text = answerEl.value.trim();
+    if (topicId === null) {
+        statusEl.textContent = "お題を読み込み中です。少し待ってください";
+        return;
     }
+    if (!text) {
+        statusEl.textContent = "回答を入力してください";
+        return;
+    }
+
+    setSending(true);
+    statusEl.textContent = "送信中…";
+
+    // timeout を使うと、返事の1つ目は「時間切れかどうか」になる
+    //   err  … 5秒以内に返事がなければエラーが入る
+    //   ok   … サーバーが受け付けたら true
+    //   info … 受け付けなかった理由とメッセージ
+    socket.timeout(5000).emit("answer", { topicId, text, deviceId }, (err, ok, info) => {
+        setSending(false);
+
+        if (err) {
+            statusEl.textContent = "送信できませんでした。もう一度押してください";
+            return;
+        }
+
+        if (ok) {
+            answerEl.value = "";
+            statusEl.textContent = "送信しました！";
+        } else {
+            // 禁止用語や同じ回答のときは、入力を残したままメッセージを出す
+            statusEl.textContent = (info && info.message)
+                || "送信できませんでした。もう一度押してください";
+        }
+    });
 });
