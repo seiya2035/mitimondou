@@ -21,7 +21,7 @@ const store = createStore({
 // お題はここで自由に書き換えられます
 const topics = [
     "100年後の犬の鳴き声は？",
-    "100年後の人気ペットランキング堂々の第一位を教えてください。/回答：チュパカブラ。",
+    "100年後の人気ペットランキング堂々の第一位を教えてください。",
     "100年後の買い物あるあるをどうぞ。",
     "100年後の給食で人気NO.1のメニューとは？",
     "2127年夏季オリンピックに加わった新種目とは？",
@@ -126,6 +126,7 @@ app.post("/api/admin/reset", requireAdmin, async (req, res) => {
         res.status(500).json({ ok: false });
     }
 });
+
 // ------------------------------------------------------------
 // 予備ローカル用の窓口（合言葉が必要）
 //   GET /api/sync/answers?after=12 → 12番より後の回答を古い順に返す
@@ -163,6 +164,7 @@ app.get("/api/sync/answers", requireSync, async (req, res) => {
         res.status(500).json({ ok: false });
     }
 });
+
 // ------------------------------------------------------------
 // Socket.IO
 // ------------------------------------------------------------
@@ -248,6 +250,18 @@ store.init()
             console.log(`保存先: ${store.kind}`);
             if (!ADMIN_PASSWORD) console.warn("ADMIN_PASSWORD が未設定のため、管理ページは使えません");
             console.log(`起動しました: http://localhost:${PORT}`);
+
+            // 予備ローカルのときだけ、Render から回答を受け取る係を動かす
+            if (process.env.SYNC_URL && SYNC_TOKEN && store.addRemote) {
+                const { startSync } = require("./sync");
+                startSync({
+                    store,
+                    remoteUrl: process.env.SYNC_URL,
+                    token: SYNC_TOKEN,
+                    onNew: (row) => io.emit("newAnswer", toPublic(row)),
+                });
+                console.log(`Render から受け取ります: ${process.env.SYNC_URL}`);
+            }
         });
     })
     .catch((err) => {

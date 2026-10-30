@@ -214,6 +214,59 @@ function createSqliteStore(filePath) {
                 ON answers (device_id, topic_id, norm)
                 WHERE device_id <> ''
             `);
+
+            // Render での番号を書く欄（Render から受け取った回答だけに入る）
+            // 前からあるデータベースにも、なければ後から足す
+            const columns = db
+                .prepare("PRAGMA table_info(answers)")
+                .all()
+                .map((c) => c.name);
+            if (!columns.includes("remote_id")) {
+                db.exec("ALTER TABLE answers ADD COLUMN remote_id INTEGER");
+            }
+            // 同じ Render の番号は1回だけ保存できるようにする（二重表示を防ぐ）
+            db.exec(`
+                CREATE UNIQUE INDEX IF NOT EXISTS answers_remote
+                ON answers (remote_id)
+                WHERE remote_id IS NOT NULL
+            `);
+        },
+
+        // Render から受け取った回答を保存する。すでにあれば null を返す
+        async addRemote({
+            remoteId,
+            topicId,
+            topic,
+            answer,
+            norm,
+            hidden,
+            createdAt,
+        }) {
+            const r = db
+                .prepare(
+                    `INSERT INTO answers (remote_id, topic_id, topic, answer, norm, hidden, created_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?)
+                     ON CONFLICT DO NOTHING
+                     RETURNING *`
+                )
+                .get(
+                    remoteId,
+                    topicId,
+                    topic,
+                    answer,
+                    norm,
+                    hidden ? 1 : 0,
+                    createdAt
+                );
+            return r ? toRow(r) : null;
+        },
+
+        // Render の何番まで受け取ったか（しおり）。まだ1件もなければ 0
+        async maxRemoteId() {
+            const r = db
+                .prepare("SELECT MAX(remote_id) AS m FROM answers")
+                .get();
+            return r && r.m ? Number(r.m) : 0;
         },
 
         async add({ topicId, topic, answer, deviceId, norm }) {
