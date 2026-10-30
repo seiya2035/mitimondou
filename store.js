@@ -54,6 +54,11 @@ function createMemoryStore() {
                 .reverse();
         },
 
+        // ○番より後の回答を古い順に返す（予備ローカルが取りに来る用）
+        async listAfter(afterId, limit = 100) {
+            return rows.filter((r) => r.id > afterId).slice(0, limit);
+        },
+
         async setHidden(id, hidden) {
             const row = rows.find((r) => r.id === id);
             if (!row) return null;
@@ -133,6 +138,18 @@ function createPgStore(databaseUrl) {
                  ORDER BY id DESC
                  LIMIT $2`,
                 [includeHidden, limit]
+            );
+            return result.rows.map(toRow);
+        },
+
+        // ○番より後の回答を古い順に返す（予備ローカルが取りに来る用）
+        async listAfter(afterId, limit = 100) {
+            const result = await pool.query(
+                `SELECT * FROM answers
+                 WHERE id > $1
+                 ORDER BY id ASC
+                 LIMIT $2`,
+                [afterId, limit]
             );
             return result.rows.map(toRow);
         },
@@ -227,6 +244,19 @@ function createSqliteStore(filePath) {
                      LIMIT ?`
                 )
                 .all(includeHidden ? 1 : 0, limit)
+                .map(toRow);
+        },
+
+        // ○番より後の回答を古い順に返す（予備ローカルが取りに来る用）
+        async listAfter(afterId, limit = 100) {
+            return db
+                .prepare(
+                    `SELECT * FROM answers
+                     WHERE id > ?
+                     ORDER BY id ASC
+                     LIMIT ?`
+                )
+                .all(afterId, limit)
                 .map(toRow);
         },
 

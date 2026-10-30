@@ -10,6 +10,7 @@ const io = new Server(server);
 
 const PORT = process.env.PORT || 3000;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || ""; // 管理ページのパスワード
+const SYNC_TOKEN = process.env.SYNC_TOKEN || ""; // 予備ローカルが回答を取りに来るときの合言葉
 const MONITOR_LIMIT = 5; // モニターに表示する回答の数
 
 const store = createStore({
@@ -125,7 +126,43 @@ app.post("/api/admin/reset", requireAdmin, async (req, res) => {
         res.status(500).json({ ok: false });
     }
 });
+// ------------------------------------------------------------
+// 予備ローカル用の窓口（合言葉が必要）
+//   GET /api/sync/answers?after=12 → 12番より後の回答を古い順に返す
+// ------------------------------------------------------------
+function requireSync(req, res, next) {
+    if (!SYNC_TOKEN) {
+        return res.status(503).json({ ok: false, message: "サーバーに SYNC_TOKEN が設定されていません" });
+    }
+    if (req.get("x-sync-token") !== SYNC_TOKEN) {
+        return res.status(401).json({ ok: false, message: "合言葉が違います" });
+    }
+    next();
+}
 
+app.get("/api/sync/answers", requireSync, async (req, res) => {
+    try {
+        // 「○番より後」の○。数字でなければ 0（最初から全部）として扱う
+        const after = Number(req.query.after);
+        const afterId = Number.isInteger(after) && after >= 0 ? after : 0;
+
+        const rows = await store.listAfter(afterId, 100);
+        res.json({
+            ok: true,
+            answers: rows.map((r) => ({
+                id: r.id,
+                topicId: r.topicId,
+                topic: r.topic,
+                answer: r.answer,
+                hidden: r.hidden,
+                createdAt: r.createdAt,
+            })),
+        });
+    } catch (err) {
+        console.error("同期用の取得エラー:", err);
+        res.status(500).json({ ok: false });
+    }
+});
 // ------------------------------------------------------------
 // Socket.IO
 // ------------------------------------------------------------
