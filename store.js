@@ -46,6 +46,33 @@ function createMemoryStore() {
             return row;
         },
 
+        // 予備ローカルから届いた設置スマホの回答を保存する
+        // 同じ送り状番号（syncKey）がすでにあれば保存せず、そちらを返す
+        async addFromLocal({
+            syncKey,
+            topicId,
+            topic,
+            answer,
+            norm,
+            createdAt,
+        }) {
+            const found = rows.find((r) => r.syncKey === syncKey);
+            if (found) return { row: found, created: false };
+            const row = {
+                id: ++seq,
+                topicId,
+                topic,
+                answer,
+                deviceId: "",
+                norm,
+                syncKey,
+                hidden: false,
+                createdAt,
+            };
+            rows.push(row);
+            return { row, created: true };
+        },
+
         // 新しい順に返す
         async list({ includeHidden = false, limit = 500 } = {}) {
             return rows
@@ -92,6 +119,7 @@ function createPgStore(databaseUrl) {
         topic: r.topic,
         answer: r.answer,
         deviceId: r.device_id,
+        syncKey: r.sync_key,
         hidden: r.hidden,
         createdAt: r.created_at,
     });
@@ -118,6 +146,45 @@ function createPgStore(databaseUrl) {
                 ON answers (device_id, topic_id, norm)
                 WHERE device_id <> ''
             `);
+
+            // 送り状番号の欄（予備ローカルから届いた設置スマホの回答だけに入る）
+            // 前からあるデータベースにも、なければ後から足す
+            await pool.query(
+                `ALTER TABLE answers ADD COLUMN IF NOT EXISTS sync_key TEXT`
+            );
+            // 同じ送り状番号は1回だけ保存できるようにする（送り直しで二重にならない）
+            await pool.query(`
+                CREATE UNIQUE INDEX IF NOT EXISTS answers_sync_key
+                ON answers (sync_key)
+                WHERE sync_key IS NOT NULL
+            `);
+        },
+
+        // 予備ローカルから届いた設置スマホの回答を保存する
+        // 同じ送り状番号（syncKey）がすでにあれば保存せず、そちらを返す
+        async addFromLocal({
+            syncKey,
+            topicId,
+            topic,
+            answer,
+            norm,
+            createdAt,
+        }) {
+            const inserted = await pool.query(
+                `INSERT INTO answers (sync_key, topic_id, topic, answer, norm, created_at)
+                 VALUES ($1, $2, $3, $4, $5, $6)
+                 ON CONFLICT (sync_key) WHERE sync_key IS NOT NULL DO NOTHING
+                 RETURNING *`,
+                [syncKey, topicId, topic, answer, norm, createdAt]
+            );
+            if (inserted.rows[0])
+                return { row: toRow(inserted.rows[0]), created: true };
+
+            const found = await pool.query(
+                `SELECT * FROM answers WHERE sync_key = $1`,
+                [syncKey]
+            );
+            return { row: toRow(found.rows[0]), created: false };
         },
 
         async add({ topicId, topic, answer, deviceId, norm }) {

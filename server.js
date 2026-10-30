@@ -50,6 +50,14 @@ function toPublic(row, viewerDeviceId = "") {
     };
 }
 
+// 呼び鈴（newAnswer）で流す形。設置スマホの回答にだけ「送り状番号」を付ける
+// （予備ローカルが「これは自分が送った回答だ」と気づけるようにするため）
+function toBroadcast(row) {
+    const data = toPublic(row);
+    if (row.syncKey) data.syncKey = row.syncKey;
+    return data;
+}
+
 // ------------------------------------------------------------
 // 回答一覧ページ用
 // ------------------------------------------------------------
@@ -157,10 +165,70 @@ app.get("/api/sync/answers", requireSync, async (req, res) => {
                 answer: r.answer,
                 hidden: r.hidden,
                 createdAt: r.createdAt,
+                syncKey: r.syncKey || null,
             })),
         });
     } catch (err) {
         console.error("同期用の取得エラー:", err);
+        res.status(500).json({ ok: false });
+    }
+});
+
+// ------------------------------------------------------------
+// 予備ローカル用の窓口その2（合言葉が必要）
+//   POST /api/sync/answers → 設置スマホの回答を受け取って保存する
+//   送り状番号（syncKey）が同じものは2回目以降は保存せず、前の番号を返す
+//   （返事が届かずに予備ローカルが送り直しても、二重にならないように）
+// ------------------------------------------------------------
+app.post("/api/sync/answers", requireSync, async (req, res) => {
+    try {
+        if (!store.addFromLocal) {
+            return res.status(501).json({ ok: false, message: "この保存先では受け取れません" });
+        }
+
+        const body = req.body || {};
+        const syncKey = typeof body.syncKey === "string" ? body.syncKey : "";
+        // 送り状番号は英数字とハイフンだけ、8〜64文字
+        if (!/^[A-Za-z0-9-]{8,64}$/.test(syncKey)) {
+            return res.status(400).json({ ok: false, reason: "badKey", message: "送り状番号が正しくありません" });
+        }
+
+        const answer = String(body.answer ?? "").trim().slice(0, 200);
+        if (!answer) {
+            return res.status(400).json({ ok: false, reason: "empty", message: "回答が空です" });
+        }
+        if (containsNgWord(answer)) {
+            console.log("同期で届いた回答に禁止用語:", answer);
+            return res.status(422).json({ ok: false, reason: "ng", message: "禁止用語が含まれています" });
+        }
+
+        // お題は番号から引く。番号がおかしければ、送られてきた文章を使う
+        const topicIdNum = Number(body.topicId);
+        const topicId = Number.isInteger(topicIdNum) && topics[topicIdNum] ? topicIdNum : null;
+        const topic = topicId !== null
+            ? topics[topicId]
+            : String(body.topic ?? "").slice(0, 200);
+
+        // 書かれた時刻（ネットが切れていて後から送る場合もあるので、予備ローカルの時刻を使う）
+        const time = new Date(body.createdAt);
+        const createdAt = Number.isNaN(time.getTime()) ? new Date() : time;
+
+        const { row, created } = await store.addFromLocal({
+            syncKey,
+            topicId,
+            topic,
+            answer,
+            norm: normalize(answer),
+            createdAt: createdAt.toISOString(),
+        });
+
+        if (created) {
+            console.log("設置スマホの回答を受信:", topic, "/", answer);
+            io.emit("newAnswer", toBroadcast(row)); // 本番のモニター・一覧ページにも出す
+        }
+        res.json({ ok: true, id: row.id, created });
+    } catch (err) {
+        console.error("同期での受け取りエラー:", err);
         res.status(500).json({ ok: false });
     }
 });
@@ -232,7 +300,7 @@ io.on("connection", (socket) => {
 
             // ④ モニターと一覧ページに流す
             console.log("回答受信:", topic, "/", answer);
-            io.emit("newAnswer", toPublic(row));
+            io.emit("newAnswer", toBroadcast(row));
             reply(true);
         } catch (err) {
             console.error("保存エラー:", err);
