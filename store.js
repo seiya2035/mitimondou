@@ -86,6 +86,11 @@ function createMemoryStore() {
             return row;
         },
 
+        // 非表示になっている回答の番号の一覧（予備ローカルとの答え合わせ用）
+        async listHiddenIds() {
+            return rows.filter((r) => r.hidden).map((r) => r.id);
+        },
+
         async reset() {
             rows = [];
         },
@@ -210,6 +215,14 @@ function createPgStore(databaseUrl) {
                 [id, hidden]
             );
             return result.rows[0] ? toRow(result.rows[0]) : null;
+        },
+
+        // 非表示になっている回答の番号の一覧（予備ローカルとの答え合わせ用）
+        async listHiddenIds() {
+            const result = await pool.query(
+                `SELECT id FROM answers WHERE hidden ORDER BY id`
+            );
+            return result.rows.map((r) => Number(r.id));
         },
 
         async reset() {
@@ -449,6 +462,49 @@ function createSqliteStore(filePath) {
                     `UPDATE answers SET hidden = ? WHERE id = ? RETURNING *`
                 )
                 .get(hidden ? 1 : 0, id);
+            return r ? toRow(r) : null;
+        },
+
+        // 非表示になっている回答の番号の一覧
+        async listHiddenIds() {
+            return db
+                .prepare("SELECT id FROM answers WHERE hidden = 1 ORDER BY id")
+                .all()
+                .map((r) => Number(r.id));
+        },
+
+        // Render の非表示の一覧に合わせる（答え合わせ）
+        //   hiddenRemoteIds … Render で非表示になっている回答の番号（Render での番号）
+        //   Render から受け取った回答（remote_id がある回答）だけを見て、
+        //   食い違っているものを直す。直した回答の一覧を返す
+        async syncHidden(hiddenRemoteIds) {
+            const hiddenSet = new Set(hiddenRemoteIds);
+            const rows = db
+                .prepare("SELECT * FROM answers WHERE remote_id IS NOT NULL")
+                .all();
+            const update = db.prepare("UPDATE answers SET hidden = ? WHERE id = ? RETURNING *");
+
+            const changed = [];
+            for (const r of rows) {
+                const shouldHide = hiddenSet.has(Number(r.remote_id));
+                const isHidden = r.hidden === 1;
+                if (shouldHide !== isHidden) {
+                    changed.push(toRow(update.get(shouldHide ? 1 : 0, r.id)));
+                }
+            }
+            return changed;
+        },
+
+        // Render の番号で1件だけ非表示 / 再表示にする（呼び鈴で知らせが来たとき用）
+        // 変わったときだけ、その回答を返す
+        async setHiddenByRemote(remoteId, hidden) {
+            const r = db
+                .prepare(
+                    `UPDATE answers SET hidden = ?
+                     WHERE remote_id = ? AND hidden <> ?
+                     RETURNING *`
+                )
+                .get(hidden ? 1 : 0, remoteId, hidden ? 1 : 0);
             return r ? toRow(r) : null;
         },
 

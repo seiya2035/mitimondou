@@ -117,7 +117,7 @@ app.post("/api/admin/answers/:id/hidden", requireAdmin, async (req, res) => {
         if (hidden) {
             io.emit("answerRemoved", { id }); // モニター・一覧ページから消す
         } else {
-            io.emit("answersChanged"); // 一覧ページを読み直す
+            io.emit("answersChanged", { id, hidden: false }); // モニター・一覧ページを読み直す
         }
         res.json({ ok: true });
     } catch (err) {
@@ -177,6 +177,18 @@ app.get("/api/sync/answers", requireSync, async (req, res) => {
         });
     } catch (err) {
         console.error("同期用の取得エラー:", err);
+        res.status(500).json({ ok: false });
+    }
+});
+
+// 非表示になっている回答の番号の一覧を返す
+//   予備ローカルが「答え合わせ」に使う（ネットが切れていて呼び鈴を聞き逃した分も直せる）
+app.get("/api/sync/hidden", requireSync, async (req, res) => {
+    try {
+        const ids = await store.listHiddenIds();
+        res.json({ ok: true, ids });
+    } catch (err) {
+        console.error("非表示一覧の取得エラー:", err);
         res.status(500).json({ ok: false });
     }
 });
@@ -350,6 +362,14 @@ store.init()
                     remoteUrl: SYNC_URL,
                     token: SYNC_TOKEN,
                     onNew: (row) => io.emit("newAnswer", toPublic(row)),
+                    // Render で非表示 / 再表示にされた回答を、こちらのモニター・一覧にも反映する
+                    onHiddenChange: (row) => {
+                        if (row.hidden) {
+                            io.emit("answerRemoved", { id: row.id });
+                        } else {
+                            io.emit("answersChanged", { id: row.id, hidden: false });
+                        }
+                    },
                 });
                 console.log(`Render から受け取ります: ${SYNC_URL}`);
                 console.log("設置スマホの回答は、ここに保存して Render にも送ります");

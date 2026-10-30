@@ -5,6 +5,10 @@
 //   呼び鈴：Render とつなぎっぱなしにして、届いた回答をその場で受け取る
 //   見回り：呼び鈴を聞き逃したときのために、10秒おきにも取りに行く
 //
+// 【非表示の反映】Render で非表示 / 再表示にした回答を、こちらにも反映する（4-1）
+//   呼び鈴：answerRemoved（非表示）・answersChanged（再表示）が鳴ったらすぐ直す
+//   答え合わせ：つながったとき・10秒おきに、Render の非表示の一覧と見比べて直す
+//
 // 【送り出し】設置スマホの回答を Render にも届ける（3-3）
 //   送り箱：まだ届いていない回答（Render での番号がまだない回答）
 //   回答が来たとき・つながったとき・10秒おきに、送り箱の中身を古い順に送る
@@ -17,7 +21,10 @@ const PATROL_MS = 10 * 1000; // 見回り・送り直しの間隔（10秒）
 const OVERLAP = 20; // しおりの少し手前から読み直す件数（追い越し対策）
 const PAGE = 100; // 窓口が1回に渡してくれる最大件数
 
-function startSync({ store, remoteUrl, token, onNew }) {
+function startSync({ store, remoteUrl, token, onNew, onHiddenChange }) {
+    // 住所の最後の「/」は取っておく（付いていると「//api/...」になって 404 になるため）
+    remoteUrl = remoteUrl.replace(/\/+$/, "");
+
     // ============================================================
     // 受け取り
     // ============================================================
@@ -78,6 +85,57 @@ function startSync({ store, remoteUrl, token, onNew }) {
             console.error("同期: 取りに行けませんでした:", err.message);
         } finally {
             pulling = false;
+        }
+    }
+
+    // ============================================================
+    // 非表示の反映
+    // ============================================================
+    let checking = false; // 今、答え合わせの最中か
+    let checkAgain = false; // 最中にもう一度呼ばれたか
+    let hiddenWarned = false; // 「窓口がない」を何度も出さないため
+
+    function announce(row) {
+        console.log(row.hidden ? "同期: 非表示にしました" : "同期: 再表示しました", "/", row.answer);
+        onHiddenChange(row);
+    }
+
+    // 呼び鈴で知らせが来たとき：その1件だけすぐ直す
+    async function applyHidden(remoteId, hidden) {
+        const row = await store.setHiddenByRemote(remoteId, hidden);
+        if (row) announce(row);
+    }
+
+    // 答え合わせ：Render の非表示の一覧を取ってきて、食い違いを全部直す
+    async function checkHidden() {
+        if (checking) {
+            checkAgain = true;
+            return;
+        }
+        checking = true;
+        try {
+            do {
+                checkAgain = false;
+                const res = await fetch(`${remoteUrl}/api/sync/hidden`, {
+                    headers: { "x-sync-token": token },
+                    signal: AbortSignal.timeout(10 * 1000),
+                });
+                if (!res.ok) {
+                    if (!hiddenWarned) {
+                        console.error("同期: 非表示の一覧をもらえませんでした", res.status);
+                        hiddenWarned = true;
+                    }
+                    break;
+                }
+                hiddenWarned = false;
+                const data = await res.json();
+                const changed = await store.syncHidden(data.ids || []);
+                changed.forEach(announce);
+            } while (checkAgain);
+        } catch (err) {
+            // ネットが切れているときは、受け取り側でもう知らせているので黙っておく
+        } finally {
+            checking = false;
         }
     }
 
@@ -180,6 +238,7 @@ function startSync({ store, remoteUrl, token, onNew }) {
         console.log("同期: Render とつながりました");
         pull(); // つながった（つながり直した）ら、すぐ取りに行く
         push(); // 送り箱に待っている回答があれば送る
+        checkHidden(); // 切れている間に非表示が変わっていないか答え合わせ
     });
     socket.on("disconnect", () => {
         console.log("同期: Render との接続が切れました（自動でつなぎ直します）");
@@ -196,10 +255,32 @@ function startSync({ store, remoteUrl, token, onNew }) {
         pull(); // 念のため窓口にも取りに行く（聞き逃した分があれば拾う）
     });
 
-    // 見回り（受け取り）と送り直し
+    // Render で非表示にされた（中身は Render での番号）
+    socket.on("answerRemoved", async (data) => {
+        try {
+            if (data && Number.isInteger(data.id)) await applyHidden(data.id, true);
+        } catch (err) {
+            console.error("同期: 非表示にできませんでした:", err.message);
+        }
+        checkHidden();
+    });
+    // Render で再表示にされた（番号がついていればその1件、なければ答え合わせだけ）
+    socket.on("answersChanged", async (data) => {
+        try {
+            if (data && Number.isInteger(data.id) && data.hidden === false) {
+                await applyHidden(data.id, false);
+            }
+        } catch (err) {
+            console.error("同期: 再表示にできませんでした:", err.message);
+        }
+        checkHidden();
+    });
+
+    // 見回り（受け取り・答え合わせ）と送り直し
     setInterval(() => {
         pull();
         push();
+        checkHidden();
     }, PATROL_MS);
 
     // server.js から「今すぐ送って」と頼めるようにする

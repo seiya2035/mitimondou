@@ -65,6 +65,14 @@ socket.on("answerRemoved", ({ id }) => {
     });
 });
 
+// 管理ページで再表示にされた（元に戻した回答を表示し直す）
+socket.on("answersChanged", () => {
+    socket.emit("getRecent", (recent) => {
+        listEl.innerHTML = "";
+        recent.forEach(addAnswer);
+    });
+});
+
 // 管理ページで全部リセットされた
 socket.on("answersReset", () => {
     listEl.innerHTML = "";
