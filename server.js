@@ -165,6 +165,7 @@ app.get("/api/sync/answers", requireSync, async (req, res) => {
         const rows = await store.listAfter(afterId, 100);
         res.json({
             ok: true,
+            epoch: await store.getEpoch(), // 帳簿の世代番号（リセットで変わる）
             answers: rows.map((r) => ({
                 id: r.id,
                 topicId: r.topicId,
@@ -186,7 +187,7 @@ app.get("/api/sync/answers", requireSync, async (req, res) => {
 app.get("/api/sync/hidden", requireSync, async (req, res) => {
     try {
         const ids = await store.listHiddenIds();
-        res.json({ ok: true, ids });
+        res.json({ ok: true, epoch: await store.getEpoch(), ids });
     } catch (err) {
         console.error("非表示一覧の取得エラー:", err);
         res.status(500).json({ ok: false });
@@ -363,6 +364,8 @@ store.init()
                     token: SYNC_TOKEN,
                     onNew: (row) => io.emit("newAnswer", toPublic(row)),
                     // Render で非表示 / 再表示にされた回答を、こちらのモニター・一覧にも反映する
+                    // Render がリセットされて、こちらも作り直した
+                    onReset: () => io.emit("answersReset"),
                     onHiddenChange: (row) => {
                         if (row.hidden) {
                             io.emit("answerRemoved", { id: row.id });

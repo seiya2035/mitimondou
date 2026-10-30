@@ -9,6 +9,10 @@
 //   呼び鈴：answerRemoved（非表示）・answersChanged（再表示）が鳴ったらすぐ直す
 //   答え合わせ：つながったとき・10秒おきに、Render の非表示の一覧と見比べて直す
 //
+// 【リセットの反映】Render の帳簿の世代番号が変わったら、こちらも作り直す（4-2）
+//   窓口の返事にはいつも世代番号が付いてくるので、それを覚えておいて見比べる
+//   作り直すときは、まだ送れていない設置スマホの回答だけ送り箱に残す
+//
 // 【送り出し】設置スマホの回答を Render にも届ける（3-3）
 //   送り箱：まだ届いていない回答（Render での番号がまだない回答）
 //   回答が来たとき・つながったとき・10秒おきに、送り箱の中身を古い順に送る
@@ -21,9 +25,33 @@ const PATROL_MS = 10 * 1000; // 見回り・送り直しの間隔（10秒）
 const OVERLAP = 20; // しおりの少し手前から読み直す件数（追い越し対策）
 const PAGE = 100; // 窓口が1回に渡してくれる最大件数
 
-function startSync({ store, remoteUrl, token, onNew, onHiddenChange }) {
+function startSync({ store, remoteUrl, token, onNew, onHiddenChange, onReset }) {
     // 住所の最後の「/」は取っておく（付いていると「//api/...」になって 404 になるため）
     remoteUrl = remoteUrl.replace(/\/+$/, "");
+
+    // ============================================================
+    // リセットの反映（世代番号の見比べ）
+    // ============================================================
+    // つながってから、世代番号をもう確かめたか
+    //   確かめる前に送ると、古い帳簿の番号とぶつかることがあるので、
+    //   送り出しは確かめ終わるまで待つ
+    let epochConfirmed = false;
+
+    // Render から届いた世代番号を見て、変わっていたら作り直す
+    // 作り直したら true を返す（呼んだ側は、受け取りを最初からやり直す）
+    async function checkEpoch(epoch) {
+        if (typeof epoch !== "string" || !epoch) return false; // 古い Render は番号を返さない
+        const known = store.getMeta("epoch");
+        if (known === epoch) return false;
+
+        store.setMeta("epoch", epoch);
+        if (!known) return false; // 初めて覚えたときは、作り直さない
+
+        const removed = await store.resetFromRemote();
+        console.log(`同期: Render がリセットされたので、こちらも作り直しました（${removed}件を消去）`);
+        onReset();
+        return true;
+    }
 
     // ============================================================
     // 受け取り
@@ -73,6 +101,17 @@ function startSync({ store, remoteUrl, token, onNew, onHiddenChange }) {
                     break;
                 }
                 const data = await res.json();
+
+                // リセットされていたら作り直して、最初から受け取り直す
+                if (await checkEpoch(data.epoch)) {
+                    pullAgain = true;
+                    continue;
+                }
+                // 世代番号を確かめ終わったので、送り出してよい
+                if (!epochConfirmed) {
+                    epochConfirmed = true;
+                    setTimeout(push, 0);
+                }
 
                 for (const a of data.answers) {
                     await save(a);
@@ -129,6 +168,11 @@ function startSync({ store, remoteUrl, token, onNew, onHiddenChange }) {
                 }
                 hiddenWarned = false;
                 const data = await res.json();
+                // 世代番号が変わっていたら、作り直しは受け取り係にまかせる
+                if (data.epoch && data.epoch !== store.getMeta("epoch")) {
+                    pull();
+                    break;
+                }
                 const changed = await store.syncHidden(data.ids || []);
                 changed.forEach(announce);
             } while (checkAgain);
@@ -188,8 +232,22 @@ function startSync({ store, remoteUrl, token, onNew, onHiddenChange }) {
         return { result: "retry", message: `Render の返事 ${res.status}` };
     }
 
+    // 送り箱で待っている件数を知らせる（件数が変わったときだけ）
+    async function reportWaiting(why) {
+        const waiting = (await store.listUnsent(1000)).length;
+        if (waiting > 0 && waiting !== lastWaiting) {
+            console.error(`同期: 今は送れません（${why}）。送り箱で待っています: ${waiting}件`);
+        }
+        lastWaiting = waiting;
+    }
+
     // 送り箱の中身を古い順に送る
     async function push() {
+        if (!epochConfirmed) {
+            // 世代番号を確かめたあと、受け取り係が呼んでくれる。待っている件数だけ知らせる
+            await reportWaiting("Render とつながっていません");
+            return;
+        }
         if (pushing) {
             pushAgain = true;
             return;
@@ -209,12 +267,10 @@ function startSync({ store, remoteUrl, token, onNew, onHiddenChange }) {
                         await store.markFailed(row.syncKey, r.reason);
                         console.error("同期: Render に断られたので送るのをやめます:", r.reason, "/", row.answer);
                     } else {
+                        // ネットが切れたかもしれないので、次は世代番号を確かめてから送る
+                        epochConfirmed = false;
                         // 1件目で失敗したら、残りも今は届かないので次の機会に回す
-                        const waiting = (await store.listUnsent(1000)).length;
-                        if (waiting !== lastWaiting) {
-                            console.error(`同期: 今は送れません（${r.message}）。送り箱で待っています: ${waiting}件`);
-                            lastWaiting = waiting;
-                        }
+                        await reportWaiting(r.message);
                         return;
                     }
                 }
@@ -236,11 +292,11 @@ function startSync({ store, remoteUrl, token, onNew, onHiddenChange }) {
     const socket = connectTo(remoteUrl, { reconnectionDelayMax: 5000 });
     socket.on("connect", () => {
         console.log("同期: Render とつながりました");
-        pull(); // つながった（つながり直した）ら、すぐ取りに行く
-        push(); // 送り箱に待っている回答があれば送る
+        pull(); // つながった（つながり直した）ら、すぐ取りに行く（終わったら送り箱も送る）
         checkHidden(); // 切れている間に非表示が変わっていないか答え合わせ
     });
     socket.on("disconnect", () => {
+        epochConfirmed = false; // つながり直したら、世代番号を確かめてから送る
         console.log("同期: Render との接続が切れました（自動でつなぎ直します）");
     });
     // 「来たよ」が鳴ったら、いっしょに届いた回答をすぐ保存してモニターに出す
@@ -274,6 +330,11 @@ function startSync({ store, remoteUrl, token, onNew, onHiddenChange }) {
             console.error("同期: 再表示にできませんでした:", err.message);
         }
         checkHidden();
+    });
+
+    // Render でリセットされた → すぐ受け取り係に確かめに行ってもらう
+    socket.on("answersReset", () => {
+        pull();
     });
 
     // 見回り（受け取り・答え合わせ）と送り直し

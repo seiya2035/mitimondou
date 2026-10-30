@@ -3,6 +3,11 @@
 //   SQLITE_PATH があれば SQLite（予備ローカル。ファイルに保存）
 //   どちらもなければメモリ（手元での開発用。サーバーを止めると消えます）
 
+// 世代番号（帳簿を作り直すたびに変わる、ランダムな文字）
+function newEpoch() {
+    return require("crypto").randomUUID();
+}
+
 function createStore({ databaseUrl, sqlitePath } = {}) {
     if (databaseUrl) return createPgStore(databaseUrl);
     if (sqlitePath) return createSqliteStore(sqlitePath);
@@ -15,6 +20,7 @@ function createStore({ databaseUrl, sqlitePath } = {}) {
 function createMemoryStore() {
     let rows = [];
     let seq = 0;
+    let epoch = newEpoch(); // 帳簿の世代番号
 
     return {
         kind: "メモリ（再起動で消えます）",
@@ -91,8 +97,15 @@ function createMemoryStore() {
             return rows.filter((r) => r.hidden).map((r) => r.id);
         },
 
+        // 帳簿の世代番号（予備ローカルが「リセットされたか」に気づくため）
+        async getEpoch() {
+            return epoch;
+        },
+
         async reset() {
             rows = [];
+            seq = 0; // 番号も 1 からやり直す（本番と同じ動きにする）
+            epoch = newEpoch();
         },
     };
 }
@@ -154,6 +167,27 @@ function createPgStore(databaseUrl) {
                 ON answers (sync_key)
                 WHERE sync_key IS NOT NULL
             `);
+
+            // 帳簿の世代番号をしまっておく小さな表（なければ作って、最初の番号を入れる）
+            await pool.query(`
+                CREATE TABLE IF NOT EXISTS sync_meta (
+                    key   TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+            `);
+            await pool.query(
+                `INSERT INTO sync_meta (key, value) VALUES ('epoch', $1)
+                 ON CONFLICT (key) DO NOTHING`,
+                [newEpoch()]
+            );
+        },
+
+        // 帳簿の世代番号（予備ローカルが「リセットされたか」に気づくため）
+        async getEpoch() {
+            const result = await pool.query(
+                `SELECT value FROM sync_meta WHERE key = 'epoch'`
+            );
+            return result.rows[0] ? result.rows[0].value : "";
         },
 
         // 予備ローカルから届いた設置スマホの回答を保存する
@@ -227,6 +261,11 @@ function createPgStore(databaseUrl) {
 
         async reset() {
             await pool.query(`TRUNCATE answers RESTART IDENTITY`);
+            // 帳簿を作り直したので、世代番号も新しくする
+            await pool.query(
+                `UPDATE sync_meta SET value = $1 WHERE key = 'epoch'`,
+                [newEpoch()]
+            );
         },
     };
 }
@@ -310,6 +349,39 @@ function createSqliteStore(filePath) {
                 ON answers (sync_key)
                 WHERE sync_key IS NOT NULL
             `);
+
+            // メモ用の小さな表（Render の帳簿の世代番号を覚えておく）
+            db.exec(`
+                CREATE TABLE IF NOT EXISTS sync_meta (
+                    key   TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+            `);
+        },
+
+        // メモを読む・書く
+        getMeta(key) {
+            const r = db.prepare("SELECT value FROM sync_meta WHERE key = ?").get(key);
+            return r ? r.value : "";
+        },
+        setMeta(key, value) {
+            db.prepare(
+                `INSERT INTO sync_meta (key, value) VALUES (?, ?)
+                 ON CONFLICT (key) DO UPDATE SET value = excluded.value`
+            ).run(key, value);
+        },
+
+        // Render がリセットされたときの作り直し
+        //   Render から来た回答・Render に届いた回答（remote_id がある）と、
+        //   断られた回答は消す。まだ送れていない設置スマホの回答だけ送り箱に残す
+        async resetFromRemote() {
+            const r = db
+                .prepare(
+                    `DELETE FROM answers
+                     WHERE NOT (remote_id IS NULL AND sync_key IS NOT NULL AND send_error IS NULL)`
+                )
+                .run();
+            return Number(r.changes);
         },
 
         // Render から受け取った回答を保存する。すでにあれば null を返す
