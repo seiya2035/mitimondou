@@ -48,14 +48,7 @@ function createMemoryStore() {
 
         // 予備ローカルから届いた設置スマホの回答を保存する
         // 同じ送り状番号（syncKey）がすでにあれば保存せず、そちらを返す
-        async addFromLocal({
-            syncKey,
-            topicId,
-            topic,
-            answer,
-            norm,
-            createdAt,
-        }) {
+        async addFromLocal({ syncKey, topicId, topic, answer, norm, createdAt }) {
             const found = rows.find((r) => r.syncKey === syncKey);
             if (found) return { row: found, created: false };
             const row = {
@@ -149,9 +142,7 @@ function createPgStore(databaseUrl) {
 
             // 送り状番号の欄（予備ローカルから届いた設置スマホの回答だけに入る）
             // 前からあるデータベースにも、なければ後から足す
-            await pool.query(
-                `ALTER TABLE answers ADD COLUMN IF NOT EXISTS sync_key TEXT`
-            );
+            await pool.query(`ALTER TABLE answers ADD COLUMN IF NOT EXISTS sync_key TEXT`);
             // 同じ送り状番号は1回だけ保存できるようにする（送り直しで二重にならない）
             await pool.query(`
                 CREATE UNIQUE INDEX IF NOT EXISTS answers_sync_key
@@ -162,14 +153,7 @@ function createPgStore(databaseUrl) {
 
         // 予備ローカルから届いた設置スマホの回答を保存する
         // 同じ送り状番号（syncKey）がすでにあれば保存せず、そちらを返す
-        async addFromLocal({
-            syncKey,
-            topicId,
-            topic,
-            answer,
-            norm,
-            createdAt,
-        }) {
+        async addFromLocal({ syncKey, topicId, topic, answer, norm, createdAt }) {
             const inserted = await pool.query(
                 `INSERT INTO answers (sync_key, topic_id, topic, answer, norm, created_at)
                  VALUES ($1, $2, $3, $4, $5, $6)
@@ -177,8 +161,7 @@ function createPgStore(databaseUrl) {
                  RETURNING *`,
                 [syncKey, topicId, topic, answer, norm, createdAt]
             );
-            if (inserted.rows[0])
-                return { row: toRow(inserted.rows[0]), created: true };
+            if (inserted.rows[0]) return { row: toRow(inserted.rows[0]), created: true };
 
             const found = await pool.query(
                 `SELECT * FROM answers WHERE sync_key = $1`,
@@ -255,6 +238,9 @@ function createSqliteStore(filePath) {
         deviceId: r.device_id,
         hidden: r.hidden === 1,
         createdAt: r.created_at,
+        remoteId: r.remote_id == null ? null : Number(r.remote_id),
+        syncKey: r.sync_key,
+        sendError: r.send_error,
     });
 
     return {
@@ -291,11 +277,25 @@ function createSqliteStore(filePath) {
             if (!columns.includes("remote_id")) {
                 db.exec("ALTER TABLE answers ADD COLUMN remote_id INTEGER");
             }
+            // 送り状番号の欄（設置スマホの回答に付ける。Render に送るときの目印）
+            if (!columns.includes("sync_key")) {
+                db.exec("ALTER TABLE answers ADD COLUMN sync_key TEXT");
+            }
+            // Render に断られて、もう送らないことにした理由（段階6で確認する用）
+            if (!columns.includes("send_error")) {
+                db.exec("ALTER TABLE answers ADD COLUMN send_error TEXT");
+            }
             // 同じ Render の番号は1回だけ保存できるようにする（二重表示を防ぐ）
             db.exec(`
                 CREATE UNIQUE INDEX IF NOT EXISTS answers_remote
                 ON answers (remote_id)
                 WHERE remote_id IS NOT NULL
+            `);
+            // 同じ送り状番号は1回だけ保存できるようにする
+            db.exec(`
+                CREATE UNIQUE INDEX IF NOT EXISTS answers_sync_key
+                ON answers (sync_key)
+                WHERE sync_key IS NOT NULL
             `);
         },
 
@@ -308,16 +308,31 @@ function createSqliteStore(filePath) {
             norm,
             hidden,
             createdAt,
+            syncKey,
         }) {
+            // 送り状番号つき＝もともと設置スマホの回答
+            // 手元に同じ送り状番号があれば、それは自分が送った回答が戻ってきたもの
+            // → 新しく保存せず、Render での番号を書き込むだけ（二重表示を防ぐ）
+            if (syncKey) {
+                const mine = db
+                    .prepare("SELECT * FROM answers WHERE sync_key = ?")
+                    .get(syncKey);
+                if (mine) {
+                    if (mine.remote_id == null) this.markSent(syncKey, remoteId);
+                    return null;
+                }
+            }
+
             const r = db
                 .prepare(
-                    `INSERT INTO answers (remote_id, topic_id, topic, answer, norm, hidden, created_at)
-                     VALUES (?, ?, ?, ?, ?, ?, ?)
+                    `INSERT INTO answers (remote_id, sync_key, topic_id, topic, answer, norm, hidden, created_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                      ON CONFLICT DO NOTHING
                      RETURNING *`
                 )
                 .get(
                     remoteId,
+                    syncKey || null,
                     topicId,
                     topic,
                     answer,
@@ -326,6 +341,54 @@ function createSqliteStore(filePath) {
                     createdAt
                 );
             return r ? toRow(r) : null;
+        },
+
+        // 設置スマホの回答を保存する（交代で使うので、端末の重複チェックはしない）
+        // 送り状番号を付けておき、あとで Render に送る
+        async addKiosk({ syncKey, topicId, topic, answer, norm }) {
+            const r = db
+                .prepare(
+                    `INSERT INTO answers (sync_key, topic_id, topic, answer, norm, created_at)
+                     VALUES (?, ?, ?, ?, ?, ?)
+                     RETURNING *`
+                )
+                .get(syncKey, topicId, topic, answer, norm, new Date().toISOString());
+            return toRow(r);
+        },
+
+        // 送り箱：まだ Render に届いていない設置スマホの回答（古い順）
+        async listUnsent(limit = 20) {
+            return db
+                .prepare(
+                    `SELECT * FROM answers
+                     WHERE sync_key IS NOT NULL
+                       AND remote_id IS NULL
+                       AND send_error IS NULL
+                     ORDER BY id ASC
+                     LIMIT ?`
+                )
+                .all(limit)
+                .map(toRow);
+        },
+
+        // Render に届いた：Render での番号を書き込む（これで送り箱から出る）
+        markSent(syncKey, remoteId) {
+            try {
+                db.prepare(
+                    `UPDATE answers SET remote_id = ?
+                     WHERE sync_key = ? AND remote_id IS NULL`
+                ).run(remoteId, syncKey);
+            } catch (err) {
+                // 同じ Render 番号がすでに別の行にあるなど。送り直しは不要なので記録だけ
+                console.error("同期: 送信済みの印を付けられませんでした:", err.message);
+            }
+        },
+
+        // Render に断られた（禁止用語など）：送り直しても無駄なので送り箱から出す
+        async markFailed(syncKey, reason) {
+            db.prepare(
+                `UPDATE answers SET send_error = ? WHERE sync_key = ?`
+            ).run(String(reason).slice(0, 100), syncKey);
         },
 
         // Render の何番まで受け取ったか（しおり）。まだ1件もなければ 0

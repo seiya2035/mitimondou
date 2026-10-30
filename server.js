@@ -3,6 +3,7 @@ const http = require("http");
 const { Server } = require("socket.io");
 const { containsNgWord, normalize } = require("./moderation");
 const { createStore } = require("./store");
+const { randomUUID } = require("crypto");
 
 const app = express();
 const server = http.createServer(app);
@@ -17,6 +18,12 @@ const store = createStore({
     databaseUrl: process.env.DATABASE_URL,
     sqlitePath: process.env.SQLITE_PATH,
 });
+
+// 予備ローカルとして動くか（Render の住所・合言葉・SQLite がそろったとき）
+//   このときサーバーに直接届く回答は、すべて設置スマホからのもの
+const SYNC_URL = process.env.SYNC_URL || "";
+const LOCAL_MODE = Boolean(SYNC_URL && SYNC_TOKEN && store.addRemote);
+let syncer = null; // Render とやりとりする係（予備ローカルのときだけ動く）
 
 // お題はここで自由に書き換えられます
 const topics = [
@@ -289,19 +296,35 @@ io.on("connection", (socket) => {
         }
 
         try {
-            // ③ 保存（同じ端末・同じお題・同じ回答なら保存されず null が返る）
-            const row = await store.add({ topicId, topic, answer, deviceId, norm: normalize(answer) });
-            if (!row) {
-                return reply(false, {
-                    reason: "repeated",
-                    message: "この回答はもう届いています。別の答えも送ってみてください",
+            let row;
+            if (LOCAL_MODE) {
+                // ③ 予備ローカル：設置スマホの回答として保存
+                //    交代で使うので重複チェックはせず、送り状番号を付けて送り箱へ
+                row = await store.addKiosk({
+                    syncKey: randomUUID(),
+                    topicId,
+                    topic,
+                    answer,
+                    norm: normalize(answer),
                 });
+            } else {
+                // ③ 保存（同じ端末・同じお題・同じ回答なら保存されず null が返る）
+                row = await store.add({ topicId, topic, answer, deviceId, norm: normalize(answer) });
+                if (!row) {
+                    return reply(false, {
+                        reason: "repeated",
+                        message: "この回答はもう届いています。別の答えも送ってみてください",
+                    });
+                }
             }
 
             // ④ モニターと一覧ページに流す
             console.log("回答受信:", topic, "/", answer);
             io.emit("newAnswer", toBroadcast(row));
             reply(true);
+
+            // ⑤ 予備ローカルなら、すぐ Render へ送りに行く（つながっていなければ送り箱で待つ）
+            if (syncer) syncer.sendNow();
         } catch (err) {
             console.error("保存エラー:", err);
             reply(false, { reason: "server", message: "送信できませんでした。もう一度押してください" });
@@ -320,15 +343,16 @@ store.init()
             console.log(`起動しました: http://localhost:${PORT}`);
 
             // 予備ローカルのときだけ、Render から回答を受け取る係を動かす
-            if (process.env.SYNC_URL && SYNC_TOKEN && store.addRemote) {
+            if (LOCAL_MODE) {
                 const { startSync } = require("./sync");
-                startSync({
+                syncer = startSync({
                     store,
-                    remoteUrl: process.env.SYNC_URL,
+                    remoteUrl: SYNC_URL,
                     token: SYNC_TOKEN,
                     onNew: (row) => io.emit("newAnswer", toPublic(row)),
                 });
-                console.log(`Render から受け取ります: ${process.env.SYNC_URL}`);
+                console.log(`Render から受け取ります: ${SYNC_URL}`);
+                console.log("設置スマホの回答は、ここに保存して Render にも送ります");
             }
         });
     })
