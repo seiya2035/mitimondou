@@ -1,9 +1,12 @@
 // 回答の保存先
 //   DATABASE_URL があれば PostgreSQL（Render 本番）
-//   なければメモリ（手元での開発用。サーバーを止めると消えます）
+//   SQLITE_PATH があれば SQLite（予備ローカル。ファイルに保存）
+//   どちらもなければメモリ（手元での開発用。サーバーを止めると消えます）
 
-function createStore(databaseUrl) {
-    return databaseUrl ? createPgStore(databaseUrl) : createMemoryStore();
+function createStore({ databaseUrl, sqlitePath } = {}) {
+    if (databaseUrl) return createPgStore(databaseUrl);
+    if (sqlitePath) return createSqliteStore(sqlitePath);
+    return createMemoryStore();
 }
 
 // ------------------------------------------------------------
@@ -144,6 +147,102 @@ function createPgStore(databaseUrl) {
 
         async reset() {
             await pool.query(`TRUNCATE answers RESTART IDENTITY`);
+        },
+    };
+}
+
+// ------------------------------------------------------------
+// SQLite 版（予備ローカル用。ファイルに保存するので再起動しても消えない）
+// ------------------------------------------------------------
+function createSqliteStore(filePath) {
+    const fs = require("fs");
+    const path = require("path");
+    const { DatabaseSync } = require("node:sqlite");
+
+    // 保存先のフォルダがなければ作る
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    const db = new DatabaseSync(filePath);
+
+    const toRow = (r) => ({
+        id: Number(r.id),
+        topicId: r.topic_id,
+        topic: r.topic,
+        answer: r.answer,
+        deviceId: r.device_id,
+        hidden: r.hidden === 1,
+        createdAt: r.created_at,
+    });
+
+    return {
+        kind: `SQLite（${filePath}）`,
+
+        async init() {
+            // 書き込み途中で電源が落ちても壊れにくくする設定
+            db.exec("PRAGMA journal_mode = WAL");
+            db.exec(`
+                CREATE TABLE IF NOT EXISTS answers (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    topic_id   INTEGER,
+                    topic      TEXT NOT NULL DEFAULT '',
+                    answer     TEXT NOT NULL,
+                    device_id  TEXT NOT NULL DEFAULT '',
+                    norm       TEXT NOT NULL DEFAULT '',
+                    hidden     INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL
+                )
+            `);
+            // 同じ端末・同じお題・同じ回答は1回だけ保存できるようにする
+            db.exec(`
+                CREATE UNIQUE INDEX IF NOT EXISTS answers_same_device
+                ON answers (device_id, topic_id, norm)
+                WHERE device_id <> ''
+            `);
+        },
+
+        async add({ topicId, topic, answer, deviceId, norm }) {
+            const r = db
+                .prepare(
+                    `INSERT INTO answers (topic_id, topic, answer, device_id, norm, created_at)
+                     VALUES (?, ?, ?, ?, ?, ?)
+                     ON CONFLICT DO NOTHING
+                     RETURNING *`
+                )
+                .get(
+                    topicId,
+                    topic,
+                    answer,
+                    deviceId,
+                    norm,
+                    new Date().toISOString()
+                );
+            return r ? toRow(r) : null;
+        },
+
+        async list({ includeHidden = false, limit = 500 } = {}) {
+            return db
+                .prepare(
+                    `SELECT * FROM answers
+                     WHERE ? OR hidden = 0
+                     ORDER BY id DESC
+                     LIMIT ?`
+                )
+                .all(includeHidden ? 1 : 0, limit)
+                .map(toRow);
+        },
+
+        async setHidden(id, hidden) {
+            const r = db
+                .prepare(
+                    `UPDATE answers SET hidden = ? WHERE id = ? RETURNING *`
+                )
+                .get(hidden ? 1 : 0, id);
+            return r ? toRow(r) : null;
+        },
+
+        async reset() {
+            db.exec(`DELETE FROM answers`);
+            // 番号も 1 からやり直す（PostgreSQL 版の RESTART IDENTITY と同じ）
+            db.exec(`DELETE FROM sqlite_sequence WHERE name = 'answers'`);
         },
     };
 }
