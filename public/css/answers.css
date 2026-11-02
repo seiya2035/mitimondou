@@ -1,0 +1,111 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif;
+  line-height: 1.6;
+}
+
+body {
+  background: #eef1f6;
+  color: #1b2340;
+}
+
+.wrap {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 24px 16px 64px;
+}
+
+h1 {
+  font-size: 1.6rem;
+  margin: 0 0 4px;
+  letter-spacing: 0.04em;
+}
+
+.lead {
+  margin: 0 0 20px;
+  color: #6b7391;
+  font-size: 0.9rem;
+}
+
+.tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.tabs button {
+  flex: 1;
+  padding: 10px;
+  border: 1px solid #d5dae6;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #1b2340;
+  font: inherit;
+  cursor: pointer;
+}
+.tabs button[aria-pressed=true] {
+  background: #1b2340;
+  border-color: #1b2340;
+  color: #ffffff;
+}
+.tabs button:focus-visible {
+  outline: 3px solid #3d5afe;
+  outline-offset: 2px;
+}
+
+.count {
+  font-size: 0.85rem;
+  color: #6b7391;
+  margin: 0 0 12px;
+}
+
+ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+li {
+  background: #ffffff;
+  border-left: 4px solid #d5dae6;
+  padding: 14px 16px;
+  margin-bottom: 10px;
+  border-radius: 4px;
+}
+li.mine {
+  border-left-color: #3d5afe;
+}
+
+.topic {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #6b7391;
+}
+
+.answer {
+  margin: 4px 0 6px;
+  font-size: 1.15rem;
+  word-break: break-word;
+}
+
+.meta {
+  margin: 0;
+  font-size: 0.75rem;
+  color: #6b7391;
+}
+.meta .you {
+  color: #3d5afe;
+  font-weight: 600;
+  margin-left: 8px;
+}
+
+.empty {
+  padding: 32px 16px;
+  text-align: center;
+  color: #6b7391;
+}
+
+/*# sourceMappingURL=answers.css.map */
