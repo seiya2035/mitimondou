@@ -1,0 +1,19 @@
+// ============================================
+// 変数（色・文字・サイズの「調味料棚」）
+// ここを書き換えると、使っている場所すべてに反映される
+// ============================================
+
+// --- 色 ---
+$color-bg: #eef1f6;      // ページの背景
+$color-ink: #1b2340;     // 文字のメインカラー
+$color-muted: #6b7391;   // 薄い文字（補足・日時など）
+$color-line: #d5dae6;    // 線・枠
+$color-accent: #3d5afe;  // 強調（自分の回答・フォーカス）
+$color-surface: #ffffff; // カードやボタンの地の色
+$color-white: #ffffff;
+
+// --- 文字 ---
+$font-base: system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif;
+
+// --- レイアウト ---
+$content-width: 640px;   // 回答一覧ページの最大幅
