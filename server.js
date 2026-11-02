@@ -94,11 +94,29 @@ function requireAdmin(req, res, next) {
     next();
 }
 
+// 予備ローカルのとき、設置スマホの回答が本番に届いたかを調べる
+//   "waiting" … 送り箱で待っている（まだ本番に届いていない）
+//   "failed"  … 本番に断られて、送るのをやめた（理由は sendError）
+//   null      … 本番に届いた、または本番から受け取った回答
+function sendStateOf(row) {
+    if (!LOCAL_MODE) return null; // 本番には送り箱がない
+    if (!row.syncKey || row.remoteId != null) return null;
+    return row.sendError ? "failed" : "waiting";
+}
+
 // 非表示にしたものも含めて全部返す
 app.get("/api/admin/answers", requireAdmin, async (req, res) => {
     try {
         const rows = await store.list({ includeHidden: true, limit: 1000 });
-        res.json(rows.map((r) => ({ ...toPublic(r), hidden: r.hidden })));
+        res.json(
+            rows.map((r) => {
+                const data = { ...toPublic(r), hidden: r.hidden };
+                const sendState = sendStateOf(r);
+                if (sendState) data.sendState = sendState;
+                if (sendState === "failed") data.sendError = r.sendError;
+                return data;
+            })
+        );
     } catch (err) {
         console.error("管理一覧の取得エラー:", err);
         res.status(500).json({ ok: false });
