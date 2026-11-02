@@ -407,3 +407,4 @@ function startSync({ store, remoteUrl, token, onNew, onHiddenChange, onReset }) 
 }
 
 module.exports = { startSync };
+
