@@ -5,7 +5,23 @@ const sendBtn = document.getElementById("send");
 const statusEl = document.getElementById("status");
 
 let topicId = null;
-let sending = false; // 送信中かどうか（連打防止用）
+let topicFixed = false; // QRで決まったお題なら true（送信後も同じお題のまま）
+let sending = false;    // 送信中・お題の切り替え中かどうか（連打防止用）
+
+// ------------------------------------------------------------
+// 住所の番号（QRコード用）
+//   https://mitimondou.onrender.com/?q=3 → 3
+//   番号がない・おかしいときは null（今までどおり順番に配ってもらう）
+//   ※最終的に正しい番号かどうかはサーバーが判断する
+// ------------------------------------------------------------
+function getQrNumber() {
+    const raw = new URLSearchParams(location.search).get("q");
+    if (raw === null) return null;
+    const q = Number(raw);
+    return Number.isInteger(q) && q >= 1 ? q : null;
+}
+
+const qrNumber = getQrNumber();
 
 // ------------------------------------------------------------
 // 端末ID：初回だけ作って、このブラウザに保存しておく
@@ -38,12 +54,42 @@ socket.on("connect_error", () => {
     statusEl.textContent = "サーバーに接続できません。少し待って再読み込みしてください";
 });
 
-// ページを開いたときに1回だけお題をもらう
-socket.emit("getTopic", (topic) => {
+function showTopic(topic) {
     topicId = topic.id;
+    topicFixed = Boolean(topic.fixed);
     topicEl.textContent = topic.text;
-    statusEl.textContent = "";
-});
+}
+
+// ページを開いたときに1回だけお題をもらう
+//   QRの番号があれば「この番号のお題ください」と頼む
+if (qrNumber !== null) {
+    socket.emit("getTopic", { q: qrNumber }, (topic) => {
+        showTopic(topic);
+        statusEl.textContent = "";
+    });
+} else {
+    socket.emit("getTopic", (topic) => {
+        showTopic(topic);
+        statusEl.textContent = "";
+    });
+}
+
+// 設置スマホ用：送信できたら次のお題に切り替える
+//   切り替え中は送信ボタンを押せないようにして、
+//   「前のお題の番号で新しい回答を送ってしまう」のを防ぐ
+function loadNextTopic() {
+    setSending(true);
+    socket.timeout(5000).emit("getTopic", (err, topic) => {
+        setSending(false);
+        if (err) {
+            // 取れなかったら今のお題のまま続ける（送信は済んでいる）
+            statusEl.textContent = "送信しました！";
+            return;
+        }
+        showTopic(topic);
+        statusEl.textContent = "送信しました！次のお題です";
+    });
+}
 
 // ------------------------------------------------------------
 // 送信
@@ -83,7 +129,13 @@ sendBtn.addEventListener("click", () => {
 
         if (ok) {
             answerEl.value = "";
-            statusEl.textContent = "送信しました！";
+            if (topicFixed) {
+                // QRのページ：同じお題のまま
+                statusEl.textContent = "送信しました！";
+            } else {
+                // 設置スマホ（番号なし）：次のお題へ
+                loadNextTopic();
+            }
         } else {
             // 禁止用語や同じ回答のときは、入力を残したままメッセージを出す
             statusEl.textContent = (info && info.message)

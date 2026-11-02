@@ -26,6 +26,9 @@ const LOCAL_MODE = Boolean(SYNC_URL && SYNC_TOKEN && store.addRemote);
 let syncer = null; // Render とやりとりする係（予備ローカルのときだけ動く）
 
 // お題はここで自由に書き換えられます
+// ※QRコード（?q=1〜12）は「上から何番目か」でお題を決めています。
+//   QRを印刷したあとは、順番の入れ替え・途中への追加・削除をしないでください。
+//   文章の言い直しだけならOKです。
 const topics = [
     "100年後の犬の鳴き声は？",
     "100年後の人気ペットランキング堂々の第一位を教えてください。",
@@ -343,11 +346,28 @@ app.post("/api/sync/answers", requireSync, async (req, res) => {
 io.on("connection", (socket) => {
     console.log("接続:", socket.id);
 
-    socket.on("getTopic", (callback) => {
+    // お題を渡す
+    //   新しい回答ページ：socket.emit("getTopic", { q: 3 }, callback)
+    //     → q が 1〜12 ならそのお題（QRごとに固定。順番の列は進めない）
+    //   番号なし・古い回答ページ：socket.emit("getTopic", callback)
+    //     → 今までどおり順番に配る（設置スマホはこちら）
+    //   おかしい番号（99 や "abc"）は番号なしと同じ扱い
+    socket.on("getTopic", (first, second) => {
+        const callback = typeof first === "function" ? first : second;
         if (typeof callback !== "function") return;
+
+        const request = (first && typeof first === "object") ? first : {};
+        const q = Number(request.q);
+
+        if (Number.isInteger(q) && q >= 1 && q <= topics.length) {
+            const id = q - 1; // 人が数える番号は1始まり、配列は0始まり
+            callback({ id, text: topics[id], fixed: true });
+            return;
+        }
+
         const id = nextIndex;
         nextIndex = (nextIndex + 1) % topics.length;
-        callback({ id, text: topics[id] });
+        callback({ id, text: topics[id], fixed: false });
     });
 
     // モニター用：最新の回答を古い順に返す（開いた直後・再接続時に使う）
