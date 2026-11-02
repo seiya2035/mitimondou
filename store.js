@@ -54,7 +54,7 @@ function createMemoryStore() {
 
         // 予備ローカルから届いた設置スマホの回答を保存する
         // 同じ送り状番号（syncKey）がすでにあれば保存せず、そちらを返す
-        async addFromLocal({ syncKey, topicId, topic, answer, norm, createdAt }) {
+        async addFromLocal({ syncKey, topicId, topic, answer, norm, createdAt, hidden = false }) {
             const found = rows.find((r) => r.syncKey === syncKey);
             if (found) return { row: found, created: false };
             const row = {
@@ -65,7 +65,7 @@ function createMemoryStore() {
                 deviceId: "",
                 norm,
                 syncKey,
-                hidden: false,
+                hidden,
                 createdAt,
             };
             rows.push(row);
@@ -192,13 +192,13 @@ function createPgStore(databaseUrl) {
 
         // 予備ローカルから届いた設置スマホの回答を保存する
         // 同じ送り状番号（syncKey）がすでにあれば保存せず、そちらを返す
-        async addFromLocal({ syncKey, topicId, topic, answer, norm, createdAt }) {
+        async addFromLocal({ syncKey, topicId, topic, answer, norm, createdAt, hidden = false }) {
             const inserted = await pool.query(
-                `INSERT INTO answers (sync_key, topic_id, topic, answer, norm, created_at)
-                 VALUES ($1, $2, $3, $4, $5, $6)
+                `INSERT INTO answers (sync_key, topic_id, topic, answer, norm, created_at, hidden)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)
                  ON CONFLICT (sync_key) WHERE sync_key IS NOT NULL DO NOTHING
                  RETURNING *`,
-                [syncKey, topicId, topic, answer, norm, createdAt]
+                [syncKey, topicId, topic, answer, norm, createdAt, hidden]
             );
             if (inserted.rows[0]) return { row: toRow(inserted.rows[0]), created: true };
 
@@ -293,6 +293,7 @@ function createSqliteStore(filePath) {
         remoteId: r.remote_id == null ? null : Number(r.remote_id),
         syncKey: r.sync_key,
         sendError: r.send_error,
+        hiddenPending: r.hidden_pending === 1,
     });
 
     return {
@@ -336,6 +337,10 @@ function createSqliteStore(filePath) {
             // Render に断られて、もう送らないことにした理由（段階6で確認する用）
             if (!columns.includes("send_error")) {
                 db.exec("ALTER TABLE answers ADD COLUMN send_error TEXT");
+            }
+            // 「本番に連絡待ち」の付箋（ローカルの管理ページで非表示を変えたとき 1）
+            if (!columns.includes("hidden_pending")) {
+                db.exec("ALTER TABLE answers ADD COLUMN hidden_pending INTEGER NOT NULL DEFAULT 0");
             }
             // 同じ Render の番号は1回だけ保存できるようにする（二重表示を防ぐ）
             db.exec(`
@@ -558,6 +563,8 @@ function createSqliteStore(filePath) {
 
             const changed = [];
             for (const r of rows) {
+                // 「本番に連絡待ち」の付箋がある回答は、こちらの操作が正しいので直さない
+                if (r.hidden_pending === 1) continue;
                 const shouldHide = hiddenSet.has(Number(r.remote_id));
                 const isHidden = r.hidden === 1;
                 if (shouldHide !== isHidden) {
@@ -573,11 +580,51 @@ function createSqliteStore(filePath) {
             const r = db
                 .prepare(
                     `UPDATE answers SET hidden = ?
-                     WHERE remote_id = ? AND hidden <> ?
+                     WHERE remote_id = ? AND hidden <> ? AND hidden_pending = 0
                      RETURNING *`
                 )
                 .get(hidden ? 1 : 0, remoteId, hidden ? 1 : 0);
             return r ? toRow(r) : null;
+        },
+
+        // ローカルの管理ページで非表示 / 元に戻すをしたとき（予備ローカル用）
+        // 本番に伝える必要がある回答には「本番に連絡待ち」の付箋を貼る
+        //   本番の番号がある回答、またはこれから送る設置スマホの回答が対象
+        async setHiddenLocal(id, hidden) {
+            const r = db
+                .prepare(
+                    `UPDATE answers
+                     SET hidden = ?,
+                         hidden_pending = CASE
+                             WHEN remote_id IS NOT NULL THEN 1
+                             WHEN sync_key IS NOT NULL AND send_error IS NULL THEN 1
+                             ELSE 0
+                         END
+                     WHERE id = ?
+                     RETURNING *`
+                )
+                .get(hidden ? 1 : 0, id);
+            return r ? toRow(r) : null;
+        },
+
+        // 付箋が貼ってあって、本番の番号がある回答（本番に伝えに行く分）
+        async listPendingHidden(limit = 20) {
+            return db
+                .prepare(
+                    `SELECT * FROM answers
+                     WHERE hidden_pending = 1 AND remote_id IS NOT NULL
+                     ORDER BY id ASC
+                     LIMIT ?`
+                )
+                .all(limit)
+                .map(toRow);
+        },
+
+        // 本番に伝わったので付箋をはがす（伝えている間にまた変わっていたら、はがさない）
+        clearPending(id, hidden) {
+            db.prepare(
+                `UPDATE answers SET hidden_pending = 0 WHERE id = ? AND hidden = ?`
+            ).run(id, hidden ? 1 : 0);
         },
 
         async reset() {

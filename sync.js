@@ -13,6 +13,10 @@
 //   窓口の返事にはいつも世代番号が付いてくるので、それを覚えておいて見比べる
 //   作り直すときは、まだ送れていない設置スマホの回答だけ送り箱に残す
 //
+// 【管理の連絡】ローカルの管理ページの操作を本番にも伝える（4-3）
+//   非表示 / 元に戻す：「本番に連絡待ち」の付箋を貼り、送り箱と一緒に本番へ伝える
+//   全リセット：本番につながっているときだけ、本番を先にリセットする
+//
 // 【送り出し】設置スマホの回答を Render にも届ける（3-3）
 //   送り箱：まだ届いていない回答（Render での番号がまだない回答）
 //   回答が来たとき・つながったとき・10秒おきに、送り箱の中身を古い順に送る
@@ -209,6 +213,7 @@ function startSync({ store, remoteUrl, token, onNew, onHiddenChange, onReset }) 
                     topic: row.topic,
                     answer: row.answer,
                     createdAt: row.createdAt,
+                    hidden: row.hidden, // 送る前にローカルで非表示にされていたら、それも伝える
                 }),
                 signal: AbortSignal.timeout(10 * 1000),
             });
@@ -219,7 +224,7 @@ function startSync({ store, remoteUrl, token, onNew, onHiddenChange, onReset }) 
         if (res.ok) {
             const data = await res.json().catch(() => null);
             if (data && data.ok && Number.isInteger(data.id)) {
-                return { result: "sent", id: data.id };
+                return { result: "sent", id: data.id, created: data.created === true };
             }
             return { result: "retry", message: "返事の形がおかしい" };
         }
@@ -230,6 +235,40 @@ function startSync({ store, remoteUrl, token, onNew, onHiddenChange, onReset }) 
         }
         // 401（合言葉違い）・5xx（Render の不調）などは、あとで送り直す
         return { result: "retry", message: `Render の返事 ${res.status}` };
+    }
+
+    // 非表示 / 元に戻すを本番に伝える（返事の意味は sendOne と同じ）
+    async function sendHidden(row) {
+        let res;
+        try {
+            res = await fetch(`${remoteUrl}/api/sync/answers/${row.remoteId}/hidden`, {
+                method: "POST",
+                headers: { "content-type": "application/json", "x-sync-token": token },
+                body: JSON.stringify({ hidden: row.hidden }),
+                signal: AbortSignal.timeout(10 * 1000),
+            });
+        } catch (err) {
+            return { result: "retry", message: err.message };
+        }
+        if (res.ok) return { result: "sent" };
+        if (res.status === 404) return { result: "failed" };
+        return { result: "retry", message: `Render の返事 ${res.status}` };
+    }
+
+    // 本番を全リセットする（ローカルの管理ページから）。新しい世代番号を返す
+    // つながっていないなどで失敗したら、エラーにする
+    async function resetRemote() {
+        const res = await fetch(`${remoteUrl}/api/sync/reset`, {
+            method: "POST",
+            headers: { "content-type": "application/json", "x-sync-token": token },
+            body: JSON.stringify({ confirm: "RESET" }),
+            signal: AbortSignal.timeout(10 * 1000),
+        });
+        const data = await res.json().catch(() => null);
+        if (!res.ok || !data || !data.ok || !data.epoch) {
+            throw new Error(`Render の返事 ${res.status}`);
+        }
+        return data.epoch;
     }
 
     // 送り箱で待っている件数を知らせる（件数が変わったときだけ）
@@ -262,6 +301,8 @@ function startSync({ store, remoteUrl, token, onNew, onHiddenChange, onReset }) 
                     const r = await sendOne(row);
                     if (r.result === "sent") {
                         store.markSent(row.syncKey, r.id);
+                        // 新しく届いたなら、非表示かどうかも一緒に伝わったので付箋をはがす
+                        if (r.created) store.clearPending(row.id, row.hidden);
                         console.log("同期: Render に送りました", r.id, "/", row.answer);
                     } else if (r.result === "failed") {
                         await store.markFailed(row.syncKey, r.reason);
@@ -276,8 +317,25 @@ function startSync({ store, remoteUrl, token, onNew, onHiddenChange, onReset }) 
                 }
                 lastWaiting = 0;
 
+                // 「本番に連絡待ち」の付箋がある回答の、非表示 / 元に戻すを伝える
+                const pending = await store.listPendingHidden(20);
+                for (const row of pending) {
+                    const r = await sendHidden(row);
+                    if (r.result === "sent") {
+                        store.clearPending(row.id, row.hidden);
+                        console.log(row.hidden ? "同期: 本番でも非表示にしました" : "同期: 本番でも元に戻しました", "/", row.answer);
+                    } else if (r.result === "failed") {
+                        store.clearPending(row.id, row.hidden); // 本番に見当たらないので、あきらめる
+                        console.error("同期: 本番に回答が見当たらないので、非表示を伝えられませんでした /", row.answer);
+                    } else {
+                        epochConfirmed = false;
+                        console.error(`同期: 今は本番に非表示を伝えられません（${r.message}）。つながったら伝えます`);
+                        return;
+                    }
+                }
+
                 // 20件ぴったりなら、まだ残っているかもしれないのでもう一度
-                if (rows.length >= 20) pushAgain = true;
+                if (rows.length >= 20 || pending.length >= 20) pushAgain = true;
             } while (pushAgain);
         } catch (err) {
             console.error("同期: 送り出しでエラー:", err.message);
@@ -345,7 +403,7 @@ function startSync({ store, remoteUrl, token, onNew, onHiddenChange, onReset }) 
     }, PATROL_MS);
 
     // server.js から「今すぐ送って」と頼めるようにする
-    return { sendNow: push };
+    return { sendNow: push, resetRemote };
 }
 
 module.exports = { startSync };

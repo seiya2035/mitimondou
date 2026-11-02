@@ -105,20 +105,30 @@ app.get("/api/admin/answers", requireAdmin, async (req, res) => {
     }
 });
 
+// 非表示 / 元に戻すを変えたことを、モニター・一覧ページに知らせる
+function announceHidden(row) {
+    console.log(row.hidden ? "非表示:" : "再表示:", row.answer);
+    if (row.hidden) {
+        io.emit("answerRemoved", { id: row.id }); // モニター・一覧ページから消す
+    } else {
+        io.emit("answersChanged", { id: row.id, hidden: false }); // モニター・一覧ページを読み直す
+    }
+}
+
 // 1件を非表示にする / 元に戻す
 app.post("/api/admin/answers/:id/hidden", requireAdmin, async (req, res) => {
     try {
         const id = Number(req.params.id);
         const hidden = req.body && req.body.hidden === true;
-        const row = await store.setHidden(id, hidden);
+
+        // 予備ローカルでは「本番に連絡待ち」の付箋を貼って、本番にも伝えに行く
+        const row = LOCAL_MODE
+            ? await store.setHiddenLocal(id, hidden)
+            : await store.setHidden(id, hidden);
         if (!row) return res.status(404).json({ ok: false, message: "回答が見つかりません" });
 
-        console.log(hidden ? "非表示:" : "再表示:", row.answer);
-        if (hidden) {
-            io.emit("answerRemoved", { id }); // モニター・一覧ページから消す
-        } else {
-            io.emit("answersChanged", { id, hidden: false }); // モニター・一覧ページを読み直す
-        }
+        announceHidden(row);
+        if (syncer) syncer.sendNow();
         res.json({ ok: true });
     } catch (err) {
         console.error("非表示の切り替えエラー:", err);
@@ -132,8 +142,27 @@ app.post("/api/admin/reset", requireAdmin, async (req, res) => {
         if (!req.body || req.body.confirm !== "RESET") {
             return res.status(400).json({ ok: false, message: "確認の文字が違います" });
         }
-        await store.reset();
-        console.log("回答を全てリセットしました");
+
+        if (LOCAL_MODE) {
+            // 予備ローカル：先に本番をリセットする。つながっていなければ、ここでやめる
+            let epoch;
+            try {
+                epoch = await syncer.resetRemote();
+            } catch (err) {
+                console.error("本番をリセットできませんでした:", err.message);
+                return res.status(502).json({
+                    ok: false,
+                    message: "Render につながっていないので、リセットできません。ネットを確認してください",
+                });
+            }
+            await store.reset();
+            store.setMeta("epoch", epoch); // 新しい帳簿の世代番号を覚えておく
+            console.log("本番とこちらの回答を全てリセットしました");
+        } else {
+            await store.reset();
+            console.log("回答を全てリセットしました");
+        }
+
         io.emit("answersReset"); // モニター・一覧ページを空にする
         res.json({ ok: true });
     } catch (err) {
@@ -194,6 +223,38 @@ app.get("/api/sync/hidden", requireSync, async (req, res) => {
     }
 });
 
+// 予備ローカルの管理ページで非表示 / 元に戻すをしたとき、本番にも反映する
+app.post("/api/sync/answers/:id/hidden", requireSync, async (req, res) => {
+    try {
+        const id = Number(req.params.id);
+        const hidden = req.body && req.body.hidden === true;
+        const row = await store.setHidden(id, hidden);
+        if (!row) return res.status(404).json({ ok: false, message: "回答が見つかりません" });
+        announceHidden(row);
+        res.json({ ok: true });
+    } catch (err) {
+        console.error("同期での非表示の切り替えエラー:", err);
+        res.status(500).json({ ok: false });
+    }
+});
+
+// 予備ローカルの管理ページで全リセットしたとき、本番もリセットする
+//   新しい帳簿の世代番号を返す
+app.post("/api/sync/reset", requireSync, async (req, res) => {
+    try {
+        if (!req.body || req.body.confirm !== "RESET") {
+            return res.status(400).json({ ok: false, message: "確認の文字が違います" });
+        }
+        await store.reset();
+        console.log("予備ローカルからの指示で、回答を全てリセットしました");
+        io.emit("answersReset");
+        res.json({ ok: true, epoch: await store.getEpoch() });
+    } catch (err) {
+        console.error("同期でのリセットエラー:", err);
+        res.status(500).json({ ok: false });
+    }
+});
+
 // ------------------------------------------------------------
 // 予備ローカル用の窓口その2（合言葉が必要）
 //   POST /api/sync/answers → 設置スマホの回答を受け取って保存する
@@ -240,11 +301,16 @@ app.post("/api/sync/answers", requireSync, async (req, res) => {
             answer,
             norm: normalize(answer),
             createdAt: createdAt.toISOString(),
+            hidden: body.hidden === true, // ローカルで送る前に非表示にされていた場合
         });
 
         if (created) {
             console.log("設置スマホの回答を受信:", topic, "/", answer);
-            io.emit("newAnswer", toBroadcast(row)); // 本番のモニター・一覧ページにも出す
+            if (!row.hidden) {
+                io.emit("newAnswer", toBroadcast(row)); // 本番のモニター・一覧ページにも出す
+            } else {
+                io.emit("answersChanged"); // 非表示で届いた：管理ページだけ読み直す
+            }
         }
         res.json({ ok: true, id: row.id, created });
     } catch (err) {
@@ -366,13 +432,7 @@ store.init()
                     // Render で非表示 / 再表示にされた回答を、こちらのモニター・一覧にも反映する
                     // Render がリセットされて、こちらも作り直した
                     onReset: () => io.emit("answersReset"),
-                    onHiddenChange: (row) => {
-                        if (row.hidden) {
-                            io.emit("answerRemoved", { id: row.id });
-                        } else {
-                            io.emit("answersChanged", { id: row.id, hidden: false });
-                        }
-                    },
+                    onHiddenChange: announceHidden,
                 });
                 console.log(`Render から受け取ります: ${SYNC_URL}`);
                 console.log("設置スマホの回答は、ここに保存して Render にも送ります");
