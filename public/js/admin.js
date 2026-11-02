@@ -8,6 +8,11 @@ const loginMessage = document.getElementById("loginMessage");
 const adminMessage = document.getElementById("adminMessage");
 const rowsEl = document.getElementById("rows");
 const countEl = document.getElementById("count");
+const syncStatusEl = document.getElementById("syncStatus");
+
+// 送信待ちがある間は、この間隔で一覧を読み直す（届いたら印が消える）
+const WAITING_RELOAD_MS = 10000;
+let waitingTimer = null;
 
 // パスワードはこのタブを閉じるまでだけ覚えておく
 let password = sessionStorage.getItem(KEY) || "";
@@ -38,14 +43,39 @@ function formatTime(value) {
     return d.toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
+// 予備ローカル：本番に届いていない回答の件数をお知らせする
+function renderSyncStatus(list) {
+    const waiting = list.filter((a) => a.sendState === "waiting").length;
+    const failed = list.filter((a) => a.sendState === "failed").length;
+
+    if (waiting === 0 && failed === 0) {
+        syncStatusEl.hidden = true;
+        syncStatusEl.textContent = "";
+    } else {
+        const parts = [];
+        if (waiting > 0) parts.push(`送信待ち ${waiting} 件（ネットがつながれば自動で送ります）`);
+        if (failed > 0) parts.push(`送れなかった ${failed} 件（本番に断られました。理由は各回答の下）`);
+        syncStatusEl.textContent = `本番に届いていない回答があります：${parts.join("／")}`;
+        syncStatusEl.classList.toggle("has-failed", failed > 0);
+        syncStatusEl.hidden = false;
+    }
+
+    // 送信待ちが残っていたら、少し後に読み直す
+    clearTimeout(waitingTimer);
+    if (waiting > 0) waitingTimer = setTimeout(load, WAITING_RELOAD_MS);
+}
+
 function render(list) {
     rowsEl.innerHTML = "";
     const hiddenCount = list.filter((a) => a.hidden).length;
     countEl.textContent = `全 ${list.length} 件（非表示 ${hiddenCount} 件）`;
+    renderSyncStatus(list);
 
     for (const a of list) {
         const tr = document.createElement("tr");
         if (a.hidden) tr.classList.add("is-hidden");
+        if (a.sendState === "waiting") tr.classList.add("is-waiting");
+        if (a.sendState === "failed") tr.classList.add("is-failed");
 
         const time = document.createElement("td");
         time.className = "time";
@@ -63,6 +93,15 @@ function render(list) {
             state.className = "state";
             state.textContent = "非表示中";
             answer.appendChild(state);
+        }
+        if (a.sendState) {
+            const send = document.createElement("span");
+            send.className = `send-state ${a.sendState}`;
+            send.textContent =
+                a.sendState === "waiting"
+                    ? "送信待ち（本番にまだ届いていません）"
+                    : `送れなかった：${a.sendError || "理由不明"}`;
+            answer.appendChild(send);
         }
 
         const action = document.createElement("td");
@@ -142,6 +181,7 @@ function showAdmin() {
 }
 
 function logout(message = "") {
+    clearTimeout(waitingTimer);
     password = "";
     sessionStorage.removeItem(KEY);
     adminView.hidden = true;

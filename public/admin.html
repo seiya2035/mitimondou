@@ -14,6 +14,9 @@
             --surface: #ffffff;
             --danger: #c62828;
             --accent: #3d5afe;
+            --warn: #a15c00;
+            --warn-bg: #fff4e0;
+            --danger-bg: #fdecea;
         }
         * { box-sizing: border-box; }
         body {
@@ -57,6 +60,18 @@
         tr.is-hidden td.answer { text-decoration: line-through; color: var(--muted); }
         .state { font-size: 0.75rem; color: var(--danger); display: block; }
 
+        /* 予備ローカル：本番に届いていない回答のお知らせ */
+        .sync-status {
+            padding: 10px 12px; border-radius: 6px; margin: 0 0 12px;
+            background: var(--warn-bg); color: var(--warn); border: 1px solid var(--warn);
+        }
+        .sync-status.has-failed { background: var(--danger-bg); color: var(--danger); border-color: var(--danger); }
+        .send-state { font-size: 0.75rem; display: block; margin-top: 2px; }
+        .send-state.waiting { color: var(--warn); }
+        .send-state.failed { color: var(--danger); }
+        tr.is-waiting { background: var(--warn-bg); }
+        tr.is-failed { background: var(--danger-bg); }
+
         @media (max-width: 600px) {
             td.topic, th.topic { display: none; }
         }
@@ -83,6 +98,7 @@
                 <button type="button" class="danger" id="resetBtn">全ての回答を消す</button>
             </div>
             <p class="message" id="adminMessage" role="alert"></p>
+            <p class="sync-status" id="syncStatus" role="status" hidden></p>
             <table>
                 <thead>
                     <tr>
