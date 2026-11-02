@@ -6,7 +6,8 @@
   "scripts": {
     "build:css": "sass src/scss:public/css --no-source-map",
     "watch:css": "sass src/scss:public/css --watch",
-    "start": "npm run build:css && node server.js"
+    "start": "npm run build:css && node server.js",
+    "make-qr": "node make-qr.js"
   },
   "repository": {
     "type": "git",
@@ -27,6 +28,7 @@
     "socket.io-client": "^4.8.4"
   },
   "devDependencies": {
-    "sass": "^1.105.2"
+    "sass": "^1.105.2",
+    "qrcode": "^1.5.4"
   }
 }
