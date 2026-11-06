@@ -1,0 +1,95 @@
+// ============================================
+// リセット（ブラウザごとの「最初から置いてある家具」を片付ける）
+// どのブラウザでも同じ状態からスタートできるようにする
+// ※色やフォントなど「このアプリらしさ」は _base.scss に書く
+// ============================================
+
+// 1. 幅と高さの計算に、枠線と内側の余白を含める
+//    （width: 100px と書いたら、枠線込みでちゃんと100pxになる）
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+
+// 2. ブラウザが勝手に付ける外側の余白を消す
+//    （見出しや段落の余白は、必要な場所で自分で付ける）
+* {
+    margin: 0;
+}
+
+// 3. スマホを横向きにしたとき、文字が勝手に大きくならないようにする
+html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+}
+
+// 4. 画像や動画が画面からはみ出さないようにする
+img,
+picture,
+video,
+canvas,
+svg {
+    display: block;
+    max-width: 100%;
+    height: auto; // 縮んだときに縦横の比率が崩れないようにする
+}
+
+// 5. 入力欄やボタンも、ページと同じ文字の形・色を使う
+//    （何もしないと、ここだけブラウザ独自の文字になる）
+input,
+button,
+textarea,
+select {
+    font: inherit;
+    color: inherit;
+}
+
+// 6. 長い英単語やURLが枠からはみ出さないようにする
+p,
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+    overflow-wrap: break-word;
+}
+
+// 7. 見出しが改行されるとき、行の長さをなるべく揃える
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+    text-wrap: balance;
+}
+
+// 8. 表の線が二重にならないようにする
+table {
+    border-collapse: collapse;
+    border-spacing: 0;
+}
+
+// 9. コードを表示する部分は、等幅フォントで少し小さくなりすぎないようにする
+//    （monospace を2回書くのは、ブラウザが文字を小さくしてしまう癖を防ぐおまじない）
+pre,
+code,
+kbd,
+samp {
+    font-family: monospace, monospace;
+}
+
+// 10. 「動きを減らす」設定の人には、アニメーションをほぼ止める
+//    （iPhoneの「視差効果を減らす」などの設定に対応）
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
+}
